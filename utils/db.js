@@ -51,7 +51,7 @@ class DBClient {
   * @returns { Any }      the document found or null if document doesnt exist
   */
   async findOneByID(col, id) {
-    const doc = await this.db.collection(col).findOne({ _id: ObjectID(id) });
+    const doc = await this.db.collection(col).findOne(ObjectID(id));
 
     return doc;
   }
@@ -62,10 +62,16 @@ class DBClient {
   * @param { Object }   query the query to match the document
   * @param { Array<Any> }      the documents found or an empty if collection is empty
   */
-  async findAll(col) {
-    const docs = await this.db.collection(col).findAll();
+  async findAll(col, query, page = 0, limit = 20) {
+    const aggregation = [
+      { $match: query },
+      { $skip: page * limit },
+      { $limit: limit },
+    ];
+    const docs = await this.db.collection(col).aggregate(aggregation);
+    // const docs = await this.db.collection(col).find(query, options);
 
-    return docs;
+    return docs.toArray();
   }
 
   /**
@@ -78,6 +84,20 @@ class DBClient {
 
     if (res) {
       return res.insertedId;
+    }
+    return null;
+  }
+
+  /**
+  * updates a documents in a collection
+  * @param { String }   col      the collection to match
+  * @param { Object }   update   the field to update
+  */
+  async updateOne(col, id, update) {
+    const res = await this.db.collection(col).updateOne({ _id: ObjectID(id) }, { $set: update });
+
+    if (res) {
+      return res;
     }
     return null;
   }
