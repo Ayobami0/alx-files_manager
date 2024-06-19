@@ -4,6 +4,7 @@ import {
 } from 'fs';
 import { randomUUID } from 'crypto';
 import { promisify } from 'util';
+import fileQueue from '../worker';
 import redisClient from '../utils/redis';
 import HttpError from '../utils/error';
 import dbClient from '../utils/db';
@@ -64,35 +65,36 @@ export default class FilesController {
 
     const file = {};
 
-    switch (fReq.type) {
-      case 'folder':
-        file.type = 'folder';
-        file.name = fReq.name;
-        file.userId = exist;
-        file.parentId = fReq.parentId || 0;
-        file.isPublic = fReq.isPublic || false;
-        break;
-      default:
-        file.name = fReq.name;
-        file.type = fReq.type;
-        file.userId = exist;
-        file.parentId = fReq.parentId || 0;
-        file.isPublic = fReq.isPublic || false;
-        file.localPath = `${FOLDER_PATH}/${randomUUID()}`;
+    if (fReq.type === 'folder') {
+      file.type = 'folder';
+      file.name = fReq.name;
+      file.userId = exist;
+      file.parentId = fReq.parentId || 0;
+      file.isPublic = fReq.isPublic || false;
+    } else {
+      file.name = fReq.name;
+      file.type = fReq.type;
+      file.userId = exist;
+      file.parentId = fReq.parentId || 0;
+      file.isPublic = fReq.isPublic || false;
+      file.localPath = `${FOLDER_PATH}/${randomUUID()}`;
 
-        try {
-          await asyncStat(FOLDER_PATH);
-        } catch (e) {
-          await asyncMkdir(FOLDER_PATH);
-        }
+      try {
+        await asyncStat(FOLDER_PATH);
+      } catch (e) {
+        await asyncMkdir(FOLDER_PATH);
+      }
 
-        const data = Buffer.from(fReq.data, 'base64');
+      const fData = Buffer.from(fReq.data, 'base64');
 
-        asyncWriteFile(file.localPath, data, { flag: 'w+' });
-        break;
+      asyncWriteFile(file.localPath, fData, { flag: 'w+' });
     }
 
     await dbClient.insertOne('files', file);
+
+    if (file.type === 'image') {
+      fileQueue.add({ fileId: file._id.toString(), userId: file.userId }).catch((err) => { throw err; });
+    }
 
     if (file.type !== 'folder') { delete file.localPath; }
     const id = file._id;
@@ -221,6 +223,7 @@ export default class FilesController {
   static async getFile(req, res) {
     const sToken = req.get('X-Token');
     const { id } = req.params;
+    const { size } = req.query;
 
     const key = `auth_${sToken}`;
     const exist = await redisClient.get(key);
@@ -245,14 +248,15 @@ export default class FilesController {
       return;
     }
 
-    asyncReadFile(file.localPath)
-      .catch(() => {
-        const err = HttpError.error('Not found', 404);
-        res.status(err.status).json(err.message);
-      })
-      .then((data) => {
-        res.append('Content-Type', file.name.split('.')[1]);
-        res.send(data);
-      });
+    const filePath = size !== undefined ? `${file.localPath}_${size}` : file.localPath;
+
+    try {
+      const buffer = await asyncReadFile(filePath);
+      res.append('Content-Type', file.name.split('.')[1]);
+      res.send(buffer);
+    } catch (e) {
+      const err = HttpError.error('Not found', 404);
+      res.status(err.status).json(err.message);
+    }
   }
 }
